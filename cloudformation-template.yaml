@@ -1,0 +1,401 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'FOMC Gists Infrastructure - DynamoDB, S3, Lambda, API Gateway, and Glue'
+
+Parameters:
+  YoutubeApiKey:
+    Type: String
+    Description: YouTube Data API v3 Key
+    NoEcho: true
+  GoogleAiApiKey:
+    Type: String
+    Description: Google AI Studio API Key
+    NoEcho: true
+  FedChannelId:
+    Type: String
+    Description: Federal Reserve YouTube Channel ID
+    Default: UCAzhpt9DmG6PnHXjmJTvRGQ
+
+Resources:
+  # S3 Bucket for data storage and Lambda layers
+  FomcS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: fomc-gists-s3
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # DynamoDB Table
+  FomcDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: fomc-gists-dynamodb
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: year
+          AttributeType: S
+        - AttributeName: month_date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: year
+          KeyType: HASH
+        - AttributeName: month_date
+          KeyType: RANGE
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  # Lambda Layer - will be created by deployment script after S3 bucket exists
+  # Commented out to avoid S3 key dependency issue during initial deployment
+  # PythonDependenciesLayer:
+  #   Type: AWS::Lambda::LayerVersion
+  #   Properties:
+  #     LayerName: fomc-python-dependencies
+  #     Description: Python dependencies for FOMC processing
+  #     Content:
+  #       S3Bucket: !Ref FomcS3Bucket
+  #       S3Key: layers/layer.zip
+  #     CompatibleRuntimes:
+  #       - python3.10
+
+  # IAM Role for Lambda functions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: FomcLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt FomcDynamoDBTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${FomcS3Bucket.Arn}/*'
+                  - !GetAtt FomcS3Bucket.Arn
+              - Effect: Allow
+                Action:
+                  - glue:StartJobRun
+                  - glue:GetJobRun
+                  - glue:BatchStopJobRun
+                Resource: !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/fomc-transform-job'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:fomc-*'
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:PutTargets
+                  - events:DeleteRule
+                  - events:RemoveTargets
+                  - events:DescribeRule
+                  - events:ListTargetsByRule
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                Resource: '*'
+
+  # Lambda Functions
+  LivestreamMonitorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fomc-livestream-monitor
+      Runtime: python3.10
+      Handler: lambda_livestream_monitor.lambda_handler
+      Code:
+        ZipFile: |
+          # Placeholder - will be updated during deployment
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Placeholder'}
+      Role: !GetAtt LambdaExecutionRole.Arn
+      # Layers will be added by deployment script
+      Environment:
+        Variables:
+          YOUTUBE_API_KEY: !Ref YoutubeApiKey
+          FED_CHANNEL_ID: !Ref FedChannelId
+          S3_BUCKET: !Ref FomcS3Bucket
+      Timeout: 900
+
+  TranscriberLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fomc-transcriber
+      Runtime: python3.10
+      Handler: lambda_transcriber.lambda_handler
+      Code:
+        ZipFile: |
+          # Placeholder - will be updated during deployment
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Placeholder'}
+      Role: !GetAtt LambdaExecutionRole.Arn
+      # Layers will be added by deployment script
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref FomcS3Bucket
+      Timeout: 900
+
+  OpeningStatementAnalysisLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fomc-opening-statement-analysis
+      Runtime: python3.10
+      Handler: lambda_opening_statement_analysis.lambda_handler
+      Code:
+        ZipFile: |
+          # Placeholder - will be updated during deployment
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Placeholder'}
+      Role: !GetAtt LambdaExecutionRole.Arn
+      # Layers will be added by deployment script
+      Environment:
+        Variables:
+          GOOGLE_AI_API_KEY: !Ref GoogleAiApiKey
+          S3_BUCKET: !Ref FomcS3Bucket
+      Timeout: 900
+
+  PressQAAnalysisLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fomc-press-qa-analysis
+      Runtime: python3.10
+      Handler: lambda_press_qa_analysis.lambda_handler
+      Code:
+        ZipFile: |
+          # Placeholder - will be updated during deployment
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Placeholder'}
+      Role: !GetAtt LambdaExecutionRole.Arn
+      # Layers will be added by deployment script
+      Environment:
+        Variables:
+          GOOGLE_AI_API_KEY: !Ref GoogleAiApiKey
+          S3_BUCKET: !Ref FomcS3Bucket
+      Timeout: 900
+
+  GlueTriggerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fomc-glue-trigger
+      Runtime: python3.10
+      Handler: lambda_glue_trigger.lambda_handler
+      Code:
+        ZipFile: |
+          # Placeholder - will be updated during deployment
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Placeholder'}
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          GLUE_JOB_NAME: fomc-transform-job
+      Timeout: 300
+
+  DataApiGatewayLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fomc-data-api-gateway
+      Runtime: python3.10
+      Handler: lambda_data_api_gateway.lambda_handler
+      Code:
+        ZipFile: |
+          # Placeholder - will be updated during deployment
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Placeholder'}
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref FomcDynamoDBTable
+      Timeout: 30
+
+  FomcSchedulerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fomc-scheduler
+      Runtime: python3.10
+      Handler: lambda_scheduler.lambda_handler
+      Code:
+        ZipFile: |
+          # Placeholder - will be updated during deployment
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Placeholder'}
+      Role: !GetAtt LambdaExecutionRole.Arn
+      # Layers will be added by deployment script
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref FomcS3Bucket
+      Timeout: 300
+
+
+  # Glue Job Role
+  GlueJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: FomcGluePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${FomcS3Bucket.Arn}/*'
+                  - !GetAtt FomcS3Bucket.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt FomcDynamoDBTable.Arn
+
+  # Glue Job
+  FomcTransformGlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: fomc-transform-job
+      Role: !Ref GlueJobRole
+      Command:
+        Name: pythonshell
+        PythonVersion: '3.9'
+        ScriptLocation: !Sub 's3://${FomcS3Bucket}/scripts/glue_job_transform_for_db.py'
+      DefaultArguments:
+        '--TempDir': !Sub 's3://${FomcS3Bucket}/temp/'
+        '--enable-metrics': 'true'
+        '--enable-spark-ui': 'false'
+        '--enable-job-insights': 'false'
+      MaxRetries: 1
+      Timeout: 60
+
+  # API Gateway
+  FomcApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: fomc-gists-api
+      Description: API for FOMC Gists data access
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowHeaders:
+          - Content-Type
+          - X-Amz-Date
+          - Authorization
+          - X-Api-Key
+          - X-Amz-Security-Token
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowOrigins:
+          - '*'
+
+  # API Gateway Integration
+  ApiGatewayIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref FomcApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DataApiGatewayLambda.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+  # API Gateway Routes
+  GetYearsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FomcApiGateway
+      RouteKey: 'GET /meetings/years'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  GetMeetingsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FomcApiGateway
+      RouteKey: 'GET /meetings/{year}'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  GetMeetingRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FomcApiGateway
+      RouteKey: 'GET /meetings/{year}/{month_date}'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  GetOpeningStatementRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FomcApiGateway
+      RouteKey: 'GET /meetings/{year}/{month_date}/opening_statement_transcript'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  # API Gateway Stage
+  ApiGatewayStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref FomcApiGateway
+      StageName: '$default'
+      AutoDeploy: true
+
+  # Lambda Permission for API Gateway
+  ApiGatewayLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataApiGatewayLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FomcApiGateway}/*/*'
+
+Outputs:
+  ApiGatewayUrl:
+    Description: API Gateway URL
+    Value: !Sub 'https://${FomcApiGateway}.execute-api.${AWS::Region}.amazonaws.com'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  S3BucketName:
+    Description: S3 Bucket Name
+    Value: !Ref FomcS3Bucket
+    Export:
+      Name: !Sub '${AWS::StackName}-S3Bucket'
+
+  DynamoDBTableName:
+    Description: DynamoDB Table Name
+    Value: !Ref FomcDynamoDBTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DynamoDBTable'
+
+  GlueJobName:
+    Description: Glue Job Name
+    Value: !Ref FomcTransformGlueJob
+    Export:
+      Name: !Sub '${AWS::StackName}-GlueJob'
