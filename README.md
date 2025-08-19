@@ -11,7 +11,85 @@ The deployment creates the following AWS resources:
 - **API Gateway**: REST API with 4 endpoints for data access
 - **Lambda Functions**: 6 functions for different processing stages
 - **Glue Job**: Data transformation job to process and store meeting data
+- **Secrets Manager**: Securely stores API keys (`fomc-gists/env-keys`)
 - **IAM Roles**: Proper permissions for all services
+
+### Architecture Diagram
+
+```mermaid
+flowchart TB
+    subgraph Scheduling
+        EB[EventBridge Rule]
+        SCH[lambda_scheduler]
+    end
+
+    subgraph Data Collection
+        YT[YouTube API]
+        MON[lambda_livestream_monitor]
+        TRANS[lambda_transcriber]
+    end
+
+    subgraph AI Analysis
+        OPEN[lambda_opening_statement_analysis]
+        QA[lambda_press_qa_analysis]
+        GEMINI[Google Gemini AI]
+    end
+
+    subgraph Data Processing
+        GLUE_TRIG[lambda_glue_trigger]
+        GLUE[Glue Job]
+    end
+
+    subgraph Storage
+        S3[(S3 Bucket)]
+        DDB[(DynamoDB)]
+        SM[Secrets Manager]
+    end
+
+    subgraph API Layer
+        APIGW[API Gateway]
+        API_LAMBDA[lambda_data_api_gateway]
+    end
+
+    USER[Client App]
+
+    %% Scheduling flow
+    SCH -->|creates| EB
+    EB -->|triggers| MON
+
+    %% Data collection flow
+    MON -->|searches| YT
+    YT -->|video found| MON
+    MON -->|invokes| TRANS
+    TRANS -->|transcribes via| GEMINI
+    TRANS -->|saves transcript| S3
+
+    %% Analysis flow
+    TRANS -->|invokes| OPEN
+    OPEN -->|analyzes via| GEMINI
+    OPEN -->|saves analysis| S3
+    OPEN -->|invokes| QA
+    QA -->|analyzes via| GEMINI
+    QA -->|saves analysis| S3
+
+    %% Data processing flow
+    QA -->|invokes| GLUE_TRIG
+    GLUE_TRIG -->|starts| GLUE
+    GLUE -->|reads from| S3
+    GLUE -->|writes to| DDB
+
+    %% API flow
+    USER -->|requests| APIGW
+    APIGW -->|invokes| API_LAMBDA
+    API_LAMBDA -->|queries| DDB
+    API_LAMBDA -->|response| USER
+
+    %% Secrets access
+    SM -.->|API keys| MON
+    SM -.->|API keys| TRANS
+    SM -.->|API keys| OPEN
+    SM -.->|API keys| QA
+```
 
 ## Prerequisites
 
