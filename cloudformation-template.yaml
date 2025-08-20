@@ -48,6 +48,20 @@ Resources:
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
 
+  # Secrets Manager Secret for API keys
+  FomcSecretsManagerSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: fomc-gists/env-keys
+      Description: API keys and configuration for FOMC Gists Lambda functions
+      SecretString: !Sub |
+        {
+          "YOUTUBE_API_KEY": "${YoutubeApiKey}",
+          "GOOGLE_AI_API_KEY": "${GoogleAiApiKey}",
+          "FED_CHANNEL_ID": "${FedChannelId}",
+          "S3_NAME": "${FomcS3Bucket}"
+        }
+
   # Lambda Layer - will be created by deployment script after S3 bucket exists
   # Commented out to avoid S3 key dependency issue during initial deployment
   # PythonDependenciesLayer:
@@ -117,6 +131,10 @@ Resources:
                   - lambda:AddPermission
                   - lambda:RemovePermission
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref FomcSecretsManagerSecret
 
   # Lambda Functions
   LivestreamMonitorLambda:
@@ -399,3 +417,9 @@ Outputs:
     Value: !Ref FomcTransformGlueJob
     Export:
       Name: !Sub '${AWS::StackName}-GlueJob'
+
+  SecretsManagerSecretArn:
+    Description: Secrets Manager Secret ARN
+    Value: !Ref FomcSecretsManagerSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-SecretsManagerSecret'
