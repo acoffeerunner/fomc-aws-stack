@@ -16,13 +16,35 @@ The deployment creates the following AWS resources:
 ## Prerequisites
 
 1. **AWS CLI** configured with appropriate credentials
-2. **Environment file** (`.env`) in the root directory with required API keys:
+2. **Environment file** (`.env`) in the parent directory with required API keys
+3. **Lambda Layer** (`layer.zip`) in the parent directory containing Python dependencies
+
+### Setting Up API Keys
+
+1. Copy the example environment file to the parent directory:
+   ```bash
+   cp .env.example ../.env
    ```
+
+2. Edit `../.env` and fill in your API keys:
+   ```
+   # YouTube Data API v3 Key
+   # Get one at: https://console.cloud.google.com/apis/credentials
    YOUTUBE_API_KEY=your_youtube_api_key_here
+
+   # Google AI Studio API Key (for Gemini)
+   # Get one at: https://aistudio.google.com/app/apikey
    GOOGLE_AI_API_KEY=your_google_ai_api_key_here
+
+   # Federal Reserve YouTube Channel ID (default provided)
    FED_CHANNEL_ID=UCAzhpt9DmG6PnHXjmJTvRGQ
    ```
-3. **Lambda Layer** (`layer.zip`) in the root directory containing Python dependencies
+
+3. The deployment script will:
+   - Read these keys from the `.env` file
+   - Pass them securely to CloudFormation as parameters
+   - Store them in AWS Secrets Manager as `fomc-gists/env-keys`
+   - Lambda functions retrieve keys from Secrets Manager at runtime
 
 ## Deployment Instructions
 
@@ -101,17 +123,18 @@ The deployment automatically configures these environment variables for Lambda f
 ```
 aws/
 ├── cloudformation-template.yaml  # Infrastructure as Code
-├── deploy.sh                    # Bash deployment script
-├── deploy.ps1                   # PowerShell deployment script
-├── undeploy.sh                  # Cleanup script
-├── lambda_data_api_gateway.py   # API Gateway integration Lambda
-├── lambda_livestream_monitor.py # YouTube monitoring Lambda
-├── lambda_transcriber.py        # Transcription processing
+├── deploy.sh                     # Bash deployment script
+├── undeploy.sh                   # Cleanup script
+├── .env.example                  # Example environment file (copy to ../.env)
+├── lambda_data_api_gateway.py    # API Gateway integration Lambda
+├── lambda_livestream_monitor.py  # YouTube monitoring Lambda
+├── lambda_transcriber.py         # Transcription processing
 ├── lambda_opening_statement_analysis.py # Opening statement analysis
-├── lambda_press_qa_analysis.py  # Press Q&A analysis
-├── lambda_glue_trigger.py       # Triggers Glue job
-├── glue_job_transform_for_db.py # Data transformation for DynamoDB
-└── README.md                    # This file
+├── lambda_press_qa_analysis.py   # Press Q&A analysis
+├── lambda_glue_trigger.py        # Triggers Glue job
+├── lambda_scheduler.py           # FOMC meeting scheduler
+├── glue_job_transform_for_db.py  # Data transformation for DynamoDB
+└── README.md                     # This file
 ```
 
 ## Workflow
@@ -169,7 +192,8 @@ Check CloudWatch Logs for each Lambda function:
 
 ## Security
 
-- API keys are stored as CloudFormation parameters (encrypted)
+- API keys are stored in AWS Secrets Manager (`fomc-gists/env-keys`)
+- Lambda functions retrieve secrets at runtime (not stored in environment variables)
 - S3 bucket has public access blocked
 - IAM roles follow least privilege principle
 - All communications use HTTPS

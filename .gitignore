@@ -1,6 +1,9 @@
 # Conda environment
 .conda/
 
+# Claude Code
+.claude/
+
 # Python
 __pycache__/
 *.py[cod]
