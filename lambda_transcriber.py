@@ -56,14 +56,12 @@ logger = logging.getLogger()
 logger.setLevel("INFO")
 
 # Initialize AWS clients
-events_client = boto3.client("events")
-lambda_client = boto3.client("lambda")
 s3_client = boto3.client("s3")
 
 
 def lambda_handler(event, context):
     """
-    Monitor FOMC YouTube livestream and trigger processing when completed.
+    Transcribe FOMC press conference video using Gemini.
     """
     logger.info("=== FOMC Transcriber Lambda Started ===")
     logger.info(f"Event: {json.dumps(event)}")
@@ -74,8 +72,6 @@ def lambda_handler(event, context):
     logger.info(f"Video ID: {video_id}")
     date_dir = event.get("date_dir")
     logger.info(f"Date Directory: {date_dir}")
-    total_duration = event.get("total_duration")
-    logger.info(f"Total Duration: {total_duration}")
 
     logger.info("=== Retrieving Keys ===")
     keys = get_keys()
@@ -89,17 +85,11 @@ def lambda_handler(event, context):
     logger.info(f"Ending text: {e_text}")
     logger.info("=== Got checks for transcript generation ===")
 
-    logger.info("Sleeping for API limit exploits...")
-    sleep(60)
-    logger.info("=== Generating transcript generation ===")
+    logger.info("=== Generating transcript ===")
     get_verbatim_transcript_from_video(video_id, s_timestamp, e_text, keys, date_dir)
     logger.info("=== Transcript generated ===")
-    sleep(60)
 
-    logger.info("=== Invoking lambda ===")
-    invoke_lambda("fomc-opening-statement-analysis", {"date_dir": date_dir})
-    logger.info("=== Lambda invoked ===")
-    logger.info("=== FOMC Transcriber Lambda Completed ===")
+    return {"date_dir": date_dir, "status": "transcript_saved"}
 
 
 def get_checks(video_id, keys):
@@ -398,18 +388,3 @@ def get_keys():
     except Exception as e:
         logger.error(f"Unexpected error retrieving keys: {e}")
         raise e
-
-
-def invoke_lambda(lambda_name, payload):
-    try:
-        lambda_response = lambda_client.invoke(
-            FunctionName=lambda_name,
-            InvocationType="Event",  # Async invocation
-            Payload=json.dumps(payload),
-        )
-
-        logger.info(f"Successfully invoked {lambda_name}")
-        logger.info(f"Lambda response status: {lambda_response['StatusCode']}")
-
-    except Exception as e:
-        logger.error(f"Failed to invoke {lambda_name} Lambda: {e}")

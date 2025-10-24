@@ -72,13 +72,10 @@ logger = logging.getLogger()
 logger.setLevel("INFO")
 
 # Initialize AWS clients
-events_client = boto3.client("events")
-lambda_client = boto3.client("lambda")
 s3_client = boto3.client("s3")
 
 
 def lambda_handler(event, context):
-    # TODO implement
     logger.info("=== FOMC Press Q&A Analysis Lambda Started ===")
     logger.info(f"Event: {json.dumps(event)}")
     logger.info(f"Function: {context.function_name}")
@@ -100,13 +97,8 @@ def lambda_handler(event, context):
     get_press_qa_analysis(press_qa_transcript, keys, date_dir)
     logger.info("=== Press Q&A Analysis Retrieved ===")
 
-    sleep(60)
-    logger.info("=== Invoking FOMC Glue Trigger Lambda ===")
-    invoke_lambda("fomc-glue-trigger", {"date_dir": date_dir})
-    logger.info("=== FOMC Glue Trigger Lambda Invoked ===")
-
     logger.info("=== FOMC Press Q&A Analysis Lambda Completed ===")
-    return
+    return {"date_dir": date_dir, "status": "analysis_complete"}
 
 
 def get_press_qa_transcript(date_dir):
@@ -273,18 +265,3 @@ def get_keys():
     except Exception as e:
         logger.error(f"Unexpected error retrieving keys: {e}")
         raise e
-
-
-def invoke_lambda(lambda_name, payload):
-    try:
-        lambda_response = lambda_client.invoke(
-            FunctionName=lambda_name,
-            InvocationType="Event",  # Async invocation
-            Payload=json.dumps(payload),
-        )
-
-        logger.info(f"Successfully invoked {lambda_name}")
-        logger.info(f"Lambda response status: {lambda_response['StatusCode']}")
-
-    except Exception as e:
-        logger.error(f"Failed to invoke {lambda_name} Lambda: {e}")
