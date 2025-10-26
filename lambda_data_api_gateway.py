@@ -8,6 +8,13 @@ dynamodb = boto3.resource("dynamodb")
 table_name = os.environ.get("DYNAMODB_TABLE", "fomc-gists-dynamodb")
 table = dynamodb.Table(table_name)
 
+CORS_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "https://fomcdebriefs.netlify.app",
+    "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
+    "Access-Control-Allow-Methods": "GET,OPTIONS",
+}
+
 
 def get_years():
     """Scan table to collect all distinct years."""
@@ -29,17 +36,20 @@ def get_years():
 
 
 def lambda_handler(event, context):
+    # Build route key from REST API v1 event format
+    route_key = f"{event['httpMethod']} {event['resource']}"
+
     # 1. List all years
-    if event["routeKey"] == "GET /meetings/years":
+    if route_key == "GET /meetings/years":
         years = get_years()
         return {
             "statusCode": 200,
             "body": json.dumps(years),
-            "headers": {"Content-Type": "application/json"},
+            "headers": CORS_HEADERS,
         }
 
     # 2. Get all meetings in a year
-    if event["routeKey"] == "GET /meetings/{year}":
+    if route_key == "GET /meetings/{year}":
         response = table.query(
             Select="SPECIFIC_ATTRIBUTES",
             KeyConditionExpression=Key("year").eq(event["pathParameters"]["year"]),
@@ -50,11 +60,11 @@ def lambda_handler(event, context):
         return {
             "statusCode": 200,
             "body": json.dumps(items, default=str),
-            "headers": {"Content-Type": "application/json"},
+            "headers": CORS_HEADERS,
         }
 
     # 3. Get a specific meeting
-    if event["routeKey"] == "GET /meetings/{year}/{month_date}":
+    if route_key == "GET /meetings/{year}/{month_date}":
         response = table.get_item(
             Key={
                 "year": event["pathParameters"]["year"],
@@ -66,16 +76,16 @@ def lambda_handler(event, context):
             return {
                 "statusCode": 404,
                 "body": json.dumps({"error": "Meeting not found"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": CORS_HEADERS,
             }
         return {
             "statusCode": 200,
             "body": json.dumps(item, default=str),
-            "headers": {"Content-Type": "application/json"},
+            "headers": CORS_HEADERS,
         }
     # 4. Get a specific meeting's opening statement
     if (
-        event["routeKey"]
+        route_key
         == "GET /meetings/{year}/{month_date}/opening_statement_transcript"
     ):
         response = table.get_item(
@@ -90,15 +100,15 @@ def lambda_handler(event, context):
             return {
                 "statusCode": 404,
                 "body": json.dumps({"error": "Meeting not found"}),
-                "headers": {"Content-Type": "application/json"},
+                "headers": CORS_HEADERS,
             }
         return {
             "statusCode": 200,
             "body": json.dumps(item, default=str),
-            "headers": {"Content-Type": "application/json"},
+            "headers": CORS_HEADERS,
         }
     return {
         "statusCode": 400,
         "body": json.dumps({"error": "Invalid request"}),
-        "headers": {"Content-Type": "application/json"},
+        "headers": CORS_HEADERS,
     }
