@@ -17,12 +17,15 @@ logger.setLevel("INFO")
 
 # Initialize AWS clients
 events_client = boto3.client("events")
-lambda_client = boto3.client("lambda")
+
+# Step Functions ARN from environment
+STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
+EVENTBRIDGE_SF_ROLE_ARN = os.environ["EVENTBRIDGE_SF_ROLE_ARN"]
 
 
 def lambda_handler(event, context):
     """
-    Schedule FOMC meeting monitoring by creating EventBridge rule for the next meeting.
+    Schedule FOMC meeting monitoring by creating EventBridge rule targeting Step Functions.
     """
     logger.info("=== FOMC Scheduler Lambda Started ===")
     logger.info(f"Event: {json.dumps(event)}")
@@ -42,7 +45,7 @@ def lambda_handler(event, context):
 
         logger.info(f"Next FOMC meeting date: {next_meeting_date}")
 
-        # Create EventBridge rule to trigger livestream monitor
+        # Create EventBridge rule to trigger Step Functions
         rule_name = f"fomc-livestream-monitor-{next_meeting_date.strftime('%Y-%m-%d')}"
 
         # Schedule for 3:10 PM Eastern on the meeting day
@@ -61,42 +64,28 @@ def lambda_handler(event, context):
         events_client.put_rule(
             Name=rule_name,
             ScheduleExpression=cron_expression,
-            Description=f"Trigger FOMC livestream monitoring for meeting on {next_meeting_date.date()}",
+            Description=f"Trigger FOMC pipeline for meeting on {next_meeting_date.date()}",
             State="ENABLED",
         )
 
-        # Add target (the livestream monitor Lambda)
+        # Add target — Step Functions state machine (not Lambda)
         events_client.put_targets(
             Rule=rule_name,
             Targets=[
                 {
                     "Id": "1",
-                    "Arn": f"arn:aws:lambda:{context.invoked_function_arn.split(':')[3]}:{context.invoked_function_arn.split(':')[4]}:function:fomc-livestream-monitor",
+                    "Arn": STATE_MACHINE_ARN,
+                    "RoleArn": EVENTBRIDGE_SF_ROLE_ARN,
                     "Input": json.dumps(
                         {
                             "scheduled_trigger": True,
                             "meeting_date": next_meeting_date.isoformat(),
                             "rule_name": rule_name,
-                            "max_attempts": 3,
-                            "attempt_interval_minutes": 10.5,
                         }
                     ),
                 }
             ],
         )
-
-        # Grant EventBridge permission to invoke the Lambda
-        try:
-            lambda_client.add_permission(
-                FunctionName="fomc-livestream-monitor",
-                StatementId=f"allow-eventbridge-{rule_name}",
-                Action="lambda:InvokeFunction",
-                Principal="events.amazonaws.com",
-                SourceArn=f"arn:aws:events:{context.invoked_function_arn.split(':')[3]}:{context.invoked_function_arn.split(':')[4]}:rule/{rule_name}",
-            )
-        except lambda_client.exceptions.ResourceConflictException:
-            # Permission already exists
-            logger.info("EventBridge permission already exists for livestream monitor")
 
         logger.info(f"Successfully created EventBridge rule: {rule_name}")
 
@@ -296,17 +285,16 @@ def get_fallback_fomc_date():
     logger.info("Using fallback hardcoded FOMC dates")
     eastern = ZoneInfo("America/New_York")
 
-    # Current known dates (update periodically)
+    # 2026 FOMC meeting dates
     fallback_dates = [
-        "2024-12-18",
-        "2025-01-29",
-        "2025-03-19",
-        "2025-04-30",
-        "2025-06-11",
-        "2025-07-30",
-        "2025-09-17",
-        "2025-11-05",
-        "2025-12-17",
+        "2026-01-28",
+        "2026-03-18",
+        "2026-04-29",
+        "2026-06-17",
+        "2026-07-29",
+        "2026-09-16",
+        "2026-10-28",
+        "2026-12-09",
     ]
 
     now = datetime.now(eastern)
