@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'FOMC Gists Infrastructure - DynamoDB, S3, Lambda, API Gateway, and Glue'
+Description: 'FOMC Gists Infrastructure - DynamoDB, S3, Lambda, Step Functions, API Gateway'
 
 Parameters:
   YoutubeApiKey:
@@ -19,6 +19,7 @@ Resources:
   # S3 Bucket for data storage and Lambda layers
   FomcS3Bucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
     Properties:
       BucketName: fomc-gists-s3
       VersioningConfiguration:
@@ -32,6 +33,7 @@ Resources:
   # DynamoDB Table
   FomcDynamoDBTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
     Properties:
       TableName: fomc-gists-dynamodb
       BillingMode: PAY_PER_REQUEST
@@ -45,8 +47,6 @@ Resources:
           KeyType: HASH
         - AttributeName: month_date
           KeyType: RANGE
-      StreamSpecification:
-        StreamViewType: NEW_AND_OLD_IMAGES
 
   # Secrets Manager Secret for API keys
   FomcSecretsManagerSecret:
@@ -61,19 +61,6 @@ Resources:
           "FED_CHANNEL_ID": "${FedChannelId}",
           "S3_NAME": "${FomcS3Bucket}"
         }
-
-  # Lambda Layer - will be created by deployment script after S3 bucket exists
-  # Commented out to avoid S3 key dependency issue during initial deployment
-  # PythonDependenciesLayer:
-  #   Type: AWS::Lambda::LayerVersion
-  #   Properties:
-  #     LayerName: fomc-python-dependencies
-  #     Description: Python dependencies for FOMC processing
-  #     Content:
-  #       S3Bucket: !Ref FomcS3Bucket
-  #       S3Key: layers/layer.zip
-  #     CompatibleRuntimes:
-  #       - python3.10
 
   # IAM Role for Lambda functions
   LambdaExecutionRole:
@@ -112,29 +99,76 @@ Resources:
                   - !GetAtt FomcS3Bucket.Arn
               - Effect: Allow
                 Action:
-                  - glue:StartJobRun
-                  - glue:GetJobRun
-                  - glue:BatchStopJobRun
-                Resource: !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/fomc-transform-job'
-              - Effect: Allow
-                Action:
-                  - lambda:InvokeFunction
-                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:fomc-*'
-              - Effect: Allow
-                Action:
                   - events:PutRule
                   - events:PutTargets
                   - events:DeleteRule
                   - events:RemoveTargets
                   - events:DescribeRule
                   - events:ListTargetsByRule
-                  - lambda:AddPermission
-                  - lambda:RemovePermission
+                  - iam:PassRole
                 Resource: '*'
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource: !Ref FomcSecretsManagerSecret
+
+  # IAM Role for Step Functions to invoke Lambdas
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StepFunctionsInvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt LivestreamMonitorLambda.Arn
+                  - !GetAtt TranscriberLambda.Arn
+                  - !GetAtt OpeningStatementAnalysisLambda.Arn
+                  - !GetAtt PressQAAnalysisLambda.Arn
+                  - !GetAtt DbTransformLambda.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: '*'
+
+  # IAM Role for EventBridge to start Step Functions executions
+  EventBridgeStepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EventBridgeStartExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Ref FomcStateMachine
 
   # Lambda Functions
   LivestreamMonitorLambda:
@@ -149,7 +183,6 @@ Resources:
           def lambda_handler(event, context):
               return {'statusCode': 200, 'body': 'Placeholder'}
       Role: !GetAtt LambdaExecutionRole.Arn
-      # Layers will be added by deployment script
       Environment:
         Variables:
           YOUTUBE_API_KEY: !Ref YoutubeApiKey
@@ -169,7 +202,6 @@ Resources:
           def lambda_handler(event, context):
               return {'statusCode': 200, 'body': 'Placeholder'}
       Role: !GetAtt LambdaExecutionRole.Arn
-      # Layers will be added by deployment script
       Environment:
         Variables:
           S3_BUCKET: !Ref FomcS3Bucket
@@ -187,7 +219,6 @@ Resources:
           def lambda_handler(event, context):
               return {'statusCode': 200, 'body': 'Placeholder'}
       Role: !GetAtt LambdaExecutionRole.Arn
-      # Layers will be added by deployment script
       Environment:
         Variables:
           GOOGLE_AI_API_KEY: !Ref GoogleAiApiKey
@@ -206,19 +237,18 @@ Resources:
           def lambda_handler(event, context):
               return {'statusCode': 200, 'body': 'Placeholder'}
       Role: !GetAtt LambdaExecutionRole.Arn
-      # Layers will be added by deployment script
       Environment:
         Variables:
           GOOGLE_AI_API_KEY: !Ref GoogleAiApiKey
           S3_BUCKET: !Ref FomcS3Bucket
       Timeout: 900
 
-  GlueTriggerLambda:
+  DbTransformLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: fomc-glue-trigger
+      FunctionName: fomc-db-transform
       Runtime: python3.10
-      Handler: lambda_glue_trigger.lambda_handler
+      Handler: lambda_db_transform.lambda_handler
       Code:
         ZipFile: |
           # Placeholder - will be updated during deployment
@@ -227,8 +257,9 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
-          GLUE_JOB_NAME: fomc-transform-job
-      Timeout: 300
+          S3_BUCKET: !Ref FomcS3Bucket
+          DYNAMODB_TABLE: !Ref FomcDynamoDBTable
+      Timeout: 60
 
   DataApiGatewayLambda:
     Type: AWS::Lambda::Function
@@ -259,130 +290,424 @@ Resources:
           def lambda_handler(event, context):
               return {'statusCode': 200, 'body': 'Placeholder'}
       Role: !GetAtt LambdaExecutionRole.Arn
-      # Layers will be added by deployment script
       Environment:
         Variables:
           S3_BUCKET: !Ref FomcS3Bucket
+          STATE_MACHINE_ARN: !Ref FomcStateMachine
+          EVENTBRIDGE_SF_ROLE_ARN: !GetAtt EventBridgeStepFunctionsRole.Arn
       Timeout: 300
 
-
-  # Glue Job Role
-  GlueJobRole:
-    Type: AWS::IAM::Role
+  # Step Functions State Machine
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: glue.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
-      Policies:
-        - PolicyName: FomcGluePolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:ListBucket
-                Resource:
-                  - !Sub '${FomcS3Bucket.Arn}/*'
-                  - !GetAtt FomcS3Bucket.Arn
-              - Effect: Allow
-                Action:
-                  - dynamodb:PutItem
-                  - dynamodb:GetItem
-                  - dynamodb:UpdateItem
-                Resource: !GetAtt FomcDynamoDBTable.Arn
+      LogGroupName: /aws/stepfunctions/fomc-pipeline
+      RetentionInDays: 30
 
-  # Glue Job
-  FomcTransformGlueJob:
-    Type: AWS::Glue::Job
+  FomcStateMachine:
+    Type: AWS::StepFunctions::StateMachine
     Properties:
-      Name: fomc-transform-job
-      Role: !Ref GlueJobRole
-      Command:
-        Name: pythonshell
-        PythonVersion: '3.9'
-        ScriptLocation: !Sub 's3://${FomcS3Bucket}/scripts/glue_job_transform_for_db.py'
-      DefaultArguments:
-        '--TempDir': !Sub 's3://${FomcS3Bucket}/temp/'
-        '--enable-metrics': 'true'
-        '--enable-spark-ui': 'false'
-        '--enable-job-insights': 'false'
-      MaxRetries: 1
-      Timeout: 60
+      StateMachineName: fomc-pipeline
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+        IncludeExecutionData: true
+        Level: ERROR
+      DefinitionString: !Sub |
+        {
+          "Comment": "FOMC Press Conference Processing Pipeline",
+          "StartAt": "MonitorLivestream",
+          "States": {
+            "MonitorLivestream": {
+              "Type": "Task",
+              "Resource": "${LivestreamMonitorLambda.Arn}",
+              "TimeoutSeconds": 900,
+              "ResultPath": "$.monitorResult",
+              "Retry": [
+                {
+                  "ErrorEquals": ["VideoNotFoundError"],
+                  "IntervalSeconds": 630,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 1.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "PipelineFailed",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "Next": "Transcribe"
+            },
+            "Transcribe": {
+              "Type": "Task",
+              "Resource": "${TranscriberLambda.Arn}",
+              "TimeoutSeconds": 900,
+              "Parameters": {
+                "date_dir.$": "$.monitorResult.date_dir",
+                "video_id.$": "$.monitorResult.video_id"
+              },
+              "ResultPath": "$.transcribeResult",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.TaskFailed", "States.Timeout"],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 5,
+                  "BackoffRate": 1.5
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "PipelineFailed",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "Next": "WaitAfterTranscribe"
+            },
+            "WaitAfterTranscribe": {
+              "Type": "Wait",
+              "Seconds": 60,
+              "Next": "OpeningStatementAnalysis"
+            },
+            "OpeningStatementAnalysis": {
+              "Type": "Task",
+              "Resource": "${OpeningStatementAnalysisLambda.Arn}",
+              "TimeoutSeconds": 900,
+              "Parameters": {
+                "date_dir.$": "$.monitorResult.date_dir"
+              },
+              "ResultPath": "$.openingResult",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.TaskFailed", "States.Timeout"],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 5,
+                  "BackoffRate": 1.5
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "PipelineFailed",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "Next": "WaitAfterOpening"
+            },
+            "WaitAfterOpening": {
+              "Type": "Wait",
+              "Seconds": 60,
+              "Next": "PressQAAnalysis"
+            },
+            "PressQAAnalysis": {
+              "Type": "Task",
+              "Resource": "${PressQAAnalysisLambda.Arn}",
+              "TimeoutSeconds": 900,
+              "Parameters": {
+                "date_dir.$": "$.monitorResult.date_dir"
+              },
+              "ResultPath": "$.pressQaResult",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.TaskFailed", "States.Timeout"],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 5,
+                  "BackoffRate": 1.5
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "PipelineFailed",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "Next": "TransformAndLoad"
+            },
+            "TransformAndLoad": {
+              "Type": "Task",
+              "Resource": "${DbTransformLambda.Arn}",
+              "TimeoutSeconds": 60,
+              "Parameters": {
+                "date_dir.$": "$.monitorResult.date_dir"
+              },
+              "ResultPath": "$.transformResult",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.TaskFailed", "States.Timeout"],
+                  "IntervalSeconds": 5,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "PipelineFailed",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "Next": "Succeed"
+            },
+            "Succeed": {
+              "Type": "Succeed"
+            },
+            "PipelineFailed": {
+              "Type": "Fail",
+              "Cause": "Pipeline step failed after retries",
+              "Error": "PipelineError"
+            }
+          }
+        }
 
-  # API Gateway
+  # REST API Gateway
   FomcApiGateway:
-    Type: AWS::ApiGatewayV2::Api
+    Type: AWS::ApiGateway::RestApi
     Properties:
       Name: fomc-gists-api
       Description: API for FOMC Gists data access
-      ProtocolType: HTTP
-      CorsConfiguration:
-        AllowHeaders:
-          - Content-Type
-          - X-Amz-Date
-          - Authorization
-          - X-Api-Key
-          - X-Amz-Security-Token
-        AllowMethods:
-          - GET
-          - POST
-          - OPTIONS
-        AllowOrigins:
-          - '*'
 
-  # API Gateway Integration
-  ApiGatewayIntegration:
-    Type: AWS::ApiGatewayV2::Integration
+  # API Gateway Resources (path segments)
+  MeetingsResource:
+    Type: AWS::ApiGateway::Resource
     Properties:
-      ApiId: !Ref FomcApiGateway
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DataApiGatewayLambda.Arn}/invocations'
-      PayloadFormatVersion: '2.0'
+      RestApiId: !Ref FomcApiGateway
+      ParentId: !GetAtt FomcApiGateway.RootResourceId
+      PathPart: meetings
 
-  # API Gateway Routes
-  GetYearsRoute:
-    Type: AWS::ApiGatewayV2::Route
+  YearsResource:
+    Type: AWS::ApiGateway::Resource
     Properties:
-      ApiId: !Ref FomcApiGateway
-      RouteKey: 'GET /meetings/years'
-      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+      RestApiId: !Ref FomcApiGateway
+      ParentId: !Ref MeetingsResource
+      PathPart: years
 
-  GetMeetingsRoute:
-    Type: AWS::ApiGatewayV2::Route
+  YearResource:
+    Type: AWS::ApiGateway::Resource
     Properties:
-      ApiId: !Ref FomcApiGateway
-      RouteKey: 'GET /meetings/{year}'
-      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+      RestApiId: !Ref FomcApiGateway
+      ParentId: !Ref MeetingsResource
+      PathPart: '{year}'
 
-  GetMeetingRoute:
-    Type: AWS::ApiGatewayV2::Route
+  MonthDateResource:
+    Type: AWS::ApiGateway::Resource
     Properties:
-      ApiId: !Ref FomcApiGateway
-      RouteKey: 'GET /meetings/{year}/{month_date}'
-      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+      RestApiId: !Ref FomcApiGateway
+      ParentId: !Ref YearResource
+      PathPart: '{month_date}'
 
-  GetOpeningStatementRoute:
-    Type: AWS::ApiGatewayV2::Route
+  OpeningStatementResource:
+    Type: AWS::ApiGateway::Resource
     Properties:
-      ApiId: !Ref FomcApiGateway
-      RouteKey: 'GET /meetings/{year}/{month_date}/opening_statement_transcript'
-      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+      RestApiId: !Ref FomcApiGateway
+      ParentId: !Ref MonthDateResource
+      PathPart: opening_statement_transcript
 
-  # API Gateway Stage
+  # GET methods
+  GetYearsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+      ResourceId: !Ref YearsResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DataApiGatewayLambda.Arn}/invocations'
+
+  GetMeetingsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+      ResourceId: !Ref YearResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DataApiGatewayLambda.Arn}/invocations'
+
+  GetMeetingMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+      ResourceId: !Ref MonthDateResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DataApiGatewayLambda.Arn}/invocations'
+
+  GetOpeningStatementMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+      ResourceId: !Ref OpeningStatementResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DataApiGatewayLambda.Arn}/invocations'
+
+  # OPTIONS methods for CORS preflight
+  YearsOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+      ResourceId: !Ref YearsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'https://fomcdebriefs.netlify.app'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  YearOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+      ResourceId: !Ref YearResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'https://fomcdebriefs.netlify.app'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  MonthDateOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+      ResourceId: !Ref MonthDateResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'https://fomcdebriefs.netlify.app'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  OpeningStatementOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+      ResourceId: !Ref OpeningStatementResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'https://fomcdebriefs.netlify.app'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # API Gateway Deployment and Stage
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - GetYearsMethod
+      - GetMeetingsMethod
+      - GetMeetingMethod
+      - GetOpeningStatementMethod
+      - YearsOptionsMethod
+      - YearOptionsMethod
+      - MonthDateOptionsMethod
+      - OpeningStatementOptionsMethod
+    Properties:
+      RestApiId: !Ref FomcApiGateway
+
   ApiGatewayStage:
-    Type: AWS::ApiGatewayV2::Stage
+    Type: AWS::ApiGateway::Stage
     Properties:
-      ApiId: !Ref FomcApiGateway
-      StageName: '$default'
-      AutoDeploy: true
+      RestApiId: !Ref FomcApiGateway
+      DeploymentId: !Ref ApiGatewayDeployment
+      StageName: prod
+
+  # API Key and Usage Plan
+  FomcApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: ApiGatewayStage
+    Properties:
+      Name: fomc-gists-api-key
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref FomcApiGateway
+          StageName: prod
+
+  FomcUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: ApiGatewayStage
+    Properties:
+      UsagePlanName: fomc-gists-usage-plan
+      Throttle:
+        RateLimit: 50
+        BurstLimit: 100
+      ApiStages:
+        - ApiId: !Ref FomcApiGateway
+          Stage: prod
+
+  FomcUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref FomcApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref FomcUsagePlan
 
   # Lambda Permission for API Gateway
   ApiGatewayLambdaPermission:
@@ -396,7 +721,7 @@ Resources:
 Outputs:
   ApiGatewayUrl:
     Description: API Gateway URL
-    Value: !Sub 'https://${FomcApiGateway}.execute-api.${AWS::Region}.amazonaws.com'
+    Value: !Sub 'https://${FomcApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod'
     Export:
       Name: !Sub '${AWS::StackName}-ApiUrl'
 
@@ -412,11 +737,15 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-DynamoDBTable'
 
-  GlueJobName:
-    Description: Glue Job Name
-    Value: !Ref FomcTransformGlueJob
+  StateMachineArn:
+    Description: Step Functions State Machine ARN
+    Value: !Ref FomcStateMachine
     Export:
-      Name: !Sub '${AWS::StackName}-GlueJob'
+      Name: !Sub '${AWS::StackName}-StateMachineArn'
+
+  ApiKeyId:
+    Description: API Key ID (retrieve value from AWS Console or CLI)
+    Value: !Ref FomcApiKey
 
   SecretsManagerSecretArn:
     Description: Secrets Manager Secret ARN
