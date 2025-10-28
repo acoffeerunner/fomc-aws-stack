@@ -7,7 +7,6 @@ from math import floor
 from time import sleep
 
 import boto3
-from botocore.exceptions import ClientError
 from dateutil.parser import isoparse
 
 # Import your existing classes (these would need to be packaged with the Lambda)
@@ -16,6 +15,7 @@ from google.genai import types
 from googleapiclient.discovery import build
 from isodate import parse_duration
 from pydantic import BaseModel, Field
+from shared_utils import get_keys
 from zoneinfo import ZoneInfo
 
 
@@ -206,62 +206,3 @@ def put_in_s3(data_to_save, file_name):
             "statusCode": 500,
             "body": json.dumps(f"Error uploading JSON to S3: {str(e)}"),
         }
-
-
-def get_keys():
-    """Retrieve API keys and configuration from AWS Secrets Manager"""
-    secret_name = "fomc-gists/env-keys"
-    region_name = "us-east-1"
-
-    logger.info(f"Retrieving secret: {secret_name} from region: {region_name}")
-
-    try:
-        # Create a Secrets Manager client
-        session = boto3.session.Session()
-        client = session.client(service_name="secretsmanager", region_name=region_name)
-
-        secret_resp = client.get_secret_value(SecretId=secret_name)
-        logger.info("Successfully retrieved secret from Secrets Manager")
-
-        # Parse the secret string (assuming it's JSON)
-        if isinstance(secret_resp["SecretString"], str):
-            import json
-
-            secret_data = json.loads(secret_resp["SecretString"])
-        else:
-            secret_data = secret_resp["SecretString"]
-
-        keys = {
-            "ai_key": secret_data["GOOGLE_AI_API_KEY"],
-            "s3_name": secret_data["S3_NAME"],
-            "yt_api_key": secret_data["YOUTUBE_API_KEY"],
-        }
-
-        logger.info("Successfully parsed secret keys")
-        logger.info(f"S3 bucket: {keys['s3_name']}")
-
-        return keys
-
-    except ClientError as e:
-        logger.error(f"Failed to retrieve secret from Secrets Manager: {e}")
-        error_code = e.response["Error"]["Code"]
-        if error_code == "DecryptionFailureException":
-            logger.error("Secret cannot be decrypted using the provided KMS key")
-        elif error_code == "InternalServiceErrorException":
-            logger.error("Internal service error occurred")
-        elif error_code == "InvalidParameterException":
-            logger.error("Invalid parameter provided")
-        elif error_code == "InvalidRequestException":
-            logger.error("Invalid request")
-        elif error_code == "ResourceNotFoundException":
-            logger.error(f"Secret {secret_name} not found")
-        raise e
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse secret as JSON: {e}")
-        raise e
-    except KeyError as e:
-        logger.error(f"Missing required key in secret: {e}")
-        raise e
-    except Exception as e:
-        logger.error(f"Unexpected error retrieving keys: {e}")
-        raise e

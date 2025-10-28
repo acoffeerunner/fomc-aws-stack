@@ -6,9 +6,9 @@ from datetime import datetime
 from time import sleep
 
 import boto3
-from botocore.exceptions import ClientError
 from googleapiclient.discovery import build
 from pytz import timezone
+from shared_utils import get_keys
 
 # Configure logging
 logger = logging.getLogger()
@@ -137,42 +137,3 @@ def cleanup_eventbridge_rule(rule_name):
         logger.info(f"Rule {rule_name} not found (already deleted)")
     except Exception as e:
         logger.error(f"Failed to cleanup rule {rule_name}: {e}")
-
-
-def get_keys():
-    """Retrieve API keys and configuration from AWS Secrets Manager"""
-    secret_name = "fomc-gists/env-keys"
-    region_name = "us-east-1"
-
-    logger.info(f"Retrieving secret: {secret_name} from region: {region_name}")
-
-    try:
-        session = boto3.session.Session()
-        client = session.client(service_name="secretsmanager", region_name=region_name)
-
-        secret_resp = client.get_secret_value(SecretId=secret_name)
-        logger.info("Successfully retrieved secret from Secrets Manager")
-
-        if isinstance(secret_resp["SecretString"], str):
-            secret_data = json.loads(secret_resp["SecretString"])
-        else:
-            secret_data = secret_resp["SecretString"]
-
-        keys = {
-            "yt_api_key": secret_data["YOUTUBE_API_KEY"],
-            "fed_channel_id": secret_data["FED_CHANNEL_ID"],
-            "s3_name": secret_data["S3_NAME"],
-        }
-
-        logger.info("Successfully parsed secret keys")
-        logger.info(f"S3 bucket: {keys['s3_name']}")
-        logger.info(f"Fed channel ID: {keys['fed_channel_id']}")
-
-        return keys
-
-    except ClientError as e:
-        logger.error(f"Failed to retrieve secret from Secrets Manager: {e}")
-        raise e
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Failed to parse secret: {e}")
-        raise e
