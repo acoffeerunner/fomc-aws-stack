@@ -95,7 +95,10 @@ fi
 # Package Lambda functions
 echo -e "${YELLOW}📦 Packaging Lambda functions...${NC}"
 mkdir -p temp_deployment
-cp lambda_*.py temp_deployment/
+cp lambda_*.py shared_utils.py temp_deployment/
+
+# Lambdas that need the shared utilities module
+NEEDS_SHARED="livestream_monitor transcriber opening_statement_analysis press_qa_analysis"
 
 # Create Lambda deployment packages
 cd temp_deployment
@@ -103,7 +106,11 @@ for lambda_file in lambda_*.py; do
     if [ -f "$lambda_file" ]; then
         function_name=$(basename "$lambda_file" .py | sed 's/lambda_//')
         echo "Packaging $lambda_file..."
-        zip -r "${function_name}.zip" "$lambda_file"
+        if echo "$NEEDS_SHARED" | grep -qw "$function_name"; then
+            zip -r "${function_name}.zip" "$lambda_file" shared_utils.py
+        else
+            zip -r "${function_name}.zip" "$lambda_file"
+        fi
         aws s3 cp "${function_name}.zip" s3://$TEMP_BUCKET/functions/
     fi
 done
@@ -153,9 +160,14 @@ for lambda_file in lambda_*.py; do
         function_name="fomc-$(basename "$lambda_file" .py | sed 's/lambda_//' | sed 's/_/-/g')"
         echo "Updating $function_name..."
 
-        # Create a temporary zip with just the Lambda function
+        # Create a temporary zip with the Lambda function (and shared_utils if needed)
         temp_zip="temp_${function_name}.zip"
-        zip "$temp_zip" "$lambda_file"
+        base_name=$(basename "$lambda_file" .py | sed 's/lambda_//')
+        if echo "$NEEDS_SHARED" | grep -qw "$base_name"; then
+            zip "$temp_zip" "$lambda_file" shared_utils.py
+        else
+            zip "$temp_zip" "$lambda_file"
+        fi
 
         # Update the Lambda function code
         aws lambda update-function-code \
