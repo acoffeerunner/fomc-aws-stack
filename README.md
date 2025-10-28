@@ -7,10 +7,10 @@ This directory contains all the necessary files to deploy the FOMC Debriefs infr
 The deployment creates the following AWS resources:
 
 - **DynamoDB Table**: `fomc-gists-dynamodb` - Stores processed FOMC meeting data
-- **S3 Bucket**: `fomc-gists-s3-{account-id}` - Stores raw files, Lambda layers, and Glue scripts
-- **API Gateway**: REST API with 4 endpoints for data access
-- **Lambda Functions**: 6 functions for different processing stages
-- **Glue Job**: Data transformation job to process and store meeting data
+- **S3 Bucket**: `fomc-gists-s3-{account-id}` - Stores raw files and Lambda layers
+- **Step Functions**: `fomc-pipeline` - Orchestrates the processing pipeline with retries
+- **API Gateway**: REST API with API key authentication and 4 endpoints for data access
+- **Lambda Functions**: 7 functions for different processing stages
 - **Secrets Manager**: Securely stores API keys (`fomc-gists/env-keys`)
 - **IAM Roles**: Proper permissions for all services
 
@@ -23,21 +23,20 @@ flowchart TB
         SCH[lambda_scheduler]
     end
 
-    subgraph Data Collection
-        YT[YouTube API]
+    subgraph Step Functions Pipeline
+        SF[fomc-pipeline State Machine]
         MON[lambda_livestream_monitor]
         TRANS[lambda_transcriber]
-    end
-
-    subgraph AI Analysis
+        WAIT1[Wait 60s]
         OPEN[lambda_opening_statement_analysis]
+        WAIT2[Wait 60s]
         QA[lambda_press_qa_analysis]
-        GEMINI[Google Gemini AI]
+        DBT[lambda_db_transform]
     end
 
-    subgraph Data Processing
-        GLUE_TRIG[lambda_glue_trigger]
-        GLUE[Glue Job]
+    subgraph External APIs
+        YT[YouTube API]
+        GEMINI[Google Gemini AI]
     end
 
     subgraph Storage
@@ -47,7 +46,7 @@ flowchart TB
     end
 
     subgraph API Layer
-        APIGW[API Gateway]
+        APIGW[API Gateway + API Key]
         API_LAMBDA[lambda_data_api_gateway]
     end
 
@@ -55,28 +54,25 @@ flowchart TB
 
     %% Scheduling flow
     SCH -->|creates| EB
-    EB -->|triggers| MON
+    EB -->|starts| SF
 
-    %% Data collection flow
+    %% Step Functions pipeline
+    SF --> MON
     MON -->|searches| YT
-    YT -->|video found| MON
-    MON -->|invokes| TRANS
+    MON --> TRANS
     TRANS -->|transcribes via| GEMINI
     TRANS -->|saves transcript| S3
-
-    %% Analysis flow
-    TRANS -->|invokes| OPEN
+    TRANS --> WAIT1
+    WAIT1 --> OPEN
     OPEN -->|analyzes via| GEMINI
     OPEN -->|saves analysis| S3
-    OPEN -->|invokes| QA
+    OPEN --> WAIT2
+    WAIT2 --> QA
     QA -->|analyzes via| GEMINI
     QA -->|saves analysis| S3
-
-    %% Data processing flow
-    QA -->|invokes| GLUE_TRIG
-    GLUE_TRIG -->|starts| GLUE
-    GLUE -->|reads from| S3
-    GLUE -->|writes to| DDB
+    QA --> DBT
+    DBT -->|reads from| S3
+    DBT -->|writes to| DDB
 
     %% API flow
     USER -->|requests| APIGW
@@ -166,7 +162,6 @@ BUCKET_NAME=$(aws cloudformation describe-stacks \
     --output text)
 
 aws s3 cp ../layer.zip s3://$BUCKET_NAME/layers/layer.zip
-aws s3 cp glue_job_transform_for_db.py s3://$BUCKET_NAME/scripts/
 
 # Update Lambda function codes (repeat for each function)
 aws lambda update-function-code \
@@ -176,14 +171,19 @@ aws lambda update-function-code \
 
 ## API Endpoints
 
-After deployment, the API Gateway will provide these endpoints:
+After deployment, the API Gateway will provide these endpoints. All endpoints require an API key (`x-api-key` header).
 
 1. **GET /meetings/years** - Returns all available years
 2. **GET /meetings/{year}** - Returns all meeting dates for a specific year
 3. **GET /meetings/{year}/{month-date}** - Returns full meeting data
 4. **GET /meetings/{year}/{month-date}/opening_statement_transcript** - Returns just the opening statement
 
-Example API URL: `https://abcdefghij.execute-api.us-east-1.amazonaws.com`
+Example API URL: `https://abcdefghij.execute-api.us-east-1.amazonaws.com/prod`
+
+To retrieve your API key value after deployment:
+```bash
+aws apigateway get-api-key --api-key <API_KEY_ID> --include-value --query 'value' --output text
+```
 
 ## Environment Variables
 
@@ -194,7 +194,8 @@ The deployment automatically configures these environment variables for Lambda f
 - `FED_CHANNEL_ID` - YouTube channel to monitor
 - `S3_BUCKET` - S3 bucket name
 - `DYNAMODB_TABLE` - DynamoDB table name
-- `GLUE_JOB_NAME` - Glue job name for data processing
+- `STATE_MACHINE_ARN` - Step Functions state machine ARN (scheduler only)
+- `EVENTBRIDGE_SF_ROLE_ARN` - IAM role for EventBridge to start Step Functions (scheduler only)
 
 ## File Structure
 
@@ -209,21 +210,25 @@ aws/
 ├── lambda_transcriber.py         # Transcription processing
 ├── lambda_opening_statement_analysis.py # Opening statement analysis
 ├── lambda_press_qa_analysis.py   # Press Q&A analysis
-├── lambda_glue_trigger.py        # Triggers Glue job
+├── lambda_db_transform.py        # Combines S3 data into DynamoDB record
 ├── lambda_scheduler.py           # FOMC meeting scheduler
-├── glue_job_transform_for_db.py  # Data transformation for DynamoDB
 └── README.md                     # This file
 ```
 
-## Workflow
+## Pipeline Workflow
 
-1. **Livestream Monitor** - Monitors YouTube for FOMC meetings
-2. **Transcriber** - Processes video and creates transcripts
-3. **Opening Statement Analysis** - Analyzes opening statements using AI
-4. **Press Q&A Analysis** - Analyzes press conference Q&A using AI
-5. **Glue Trigger** - Triggered when all analysis is complete
-6. **Glue Job** - Transforms and loads data into DynamoDB
-7. **API Gateway** - Serves processed data to applications
+The pipeline is orchestrated by AWS Step Functions with per-step retries:
+
+1. **Livestream Monitor** - Polls YouTube for completed FOMC press conference (retries 3x at 10.5 min intervals)
+2. **Transcriber** - Transcribes video via Gemini AI and saves to S3
+3. **Wait 60s** - Gemini API rate limit buffer
+4. **Opening Statement Analysis** - Analyzes the Chair's opening statement via Gemini AI
+5. **Wait 60s** - Gemini API rate limit buffer
+6. **Press Q&A Analysis** - Analyzes press conference Q&A via Gemini AI
+7. **Transform & Load** - Reads all S3 artifacts and writes combined record to DynamoDB
+8. **API Gateway** - Serves processed data to applications (independent of pipeline)
+
+If any step fails after exhausting retries, the pipeline transitions to a `PipelineFailed` state.
 
 ## Cleanup
 
@@ -237,6 +242,8 @@ To remove all AWS resources:
 aws cloudformation delete-stack --stack-name fomc-gists-stack
 ```
 
+Note: S3 bucket and DynamoDB table have `DeletionPolicy: Retain` and will not be deleted with the stack.
+
 ## Costs
 
 Expected monthly costs (with minimal usage):
@@ -245,7 +252,7 @@ Expected monthly costs (with minimal usage):
 - **Lambda**: ~$1-10 (generous free tier)
 - **S3**: ~$1-5 (storage and requests)
 - **API Gateway**: ~$1-5 (per million requests)
-- **Glue**: ~$0.44/hour when running
+- **Step Functions**: ~$0.01 (per execution, ~8 state transitions each)
 
 **Total estimated**: $5-25/month depending on usage
 
@@ -265,8 +272,11 @@ Check CloudWatch Logs for each Lambda function:
 - `/aws/lambda/fomc-transcriber`
 - `/aws/lambda/fomc-opening-statement-analysis`
 - `/aws/lambda/fomc-press-qa-analysis`
-- `/aws/lambda/fomc-glue-trigger`
+- `/aws/lambda/fomc-db-transform`
 - `/aws/lambda/fomc-data-api-gateway`
+
+Step Functions execution history:
+- AWS Console > Step Functions > `fomc-pipeline` > Executions
 
 ## Security
 
@@ -274,6 +284,8 @@ Check CloudWatch Logs for each Lambda function:
 - Lambda functions retrieve secrets at runtime (not stored in environment variables)
 - S3 bucket has public access blocked
 - IAM roles follow least privilege principle
+- API Gateway endpoints require an API key
+- CORS restricted to `https://fomcdebriefs.netlify.app`
 - All communications use HTTPS
 
 ## Support
@@ -281,5 +293,6 @@ Check CloudWatch Logs for each Lambda function:
 For issues with deployment:
 1. Check CloudFormation events in AWS Console
 2. Review Lambda function logs in CloudWatch
-3. Verify all prerequisites are met
-4. Ensure proper AWS permissions
+3. Check Step Functions execution history for pipeline failures
+4. Verify all prerequisites are met
+5. Ensure proper AWS permissions
