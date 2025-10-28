@@ -95,7 +95,7 @@ fi
 # Package Lambda functions
 echo -e "${YELLOW}📦 Packaging Lambda functions...${NC}"
 mkdir -p temp_deployment
-cp *.py temp_deployment/
+cp lambda_*.py temp_deployment/
 
 # Create Lambda deployment packages
 cd temp_deployment
@@ -107,10 +107,6 @@ for lambda_file in lambda_*.py; do
         aws s3 cp "${function_name}.zip" s3://$TEMP_BUCKET/functions/
     fi
 done
-
-# Upload Glue script
-echo -e "${YELLOW}📤 Uploading Glue script...${NC}"
-aws s3 cp glue_job_transform_for_db.py s3://$TEMP_BUCKET/scripts/glue_job_transform_for_db.py
 cd ..
 
 # Deploy CloudFormation stack
@@ -150,9 +146,6 @@ LAYER_ARN=$(aws lambda publish-layer-version \
 
 echo -e "${GREEN}✅ Layer created: $LAYER_ARN${NC}"
 
-# Upload Glue script to actual bucket
-aws s3 cp glue_job_transform_for_db.py s3://$ACTUAL_S3_BUCKET/scripts/glue_job_transform_for_db.py
-
 # Update Lambda function codes and add layer
 echo -e "${YELLOW}🔄 Updating Lambda function codes and adding layer...${NC}"
 for lambda_file in lambda_*.py; do
@@ -176,8 +169,8 @@ for lambda_file in lambda_*.py; do
             --function-name "$function_name" \
             --region $REGION
 
-        # Add the layer to the function (skip for data-api-gateway as it doesn't need dependencies)
-        if [[ "$function_name" != *"data-api-gateway"* ]]; then
+        # Add the layer to the function (skip for data-api-gateway and db-transform as they don't need dependencies)
+        if [[ "$function_name" != *"data-api-gateway"* ]] && [[ "$function_name" != *"db-transform"* ]]; then
             echo "Adding layer to $function_name..."
             aws lambda update-function-configuration \
                 --function-name "$function_name" \
@@ -201,14 +194,33 @@ API_URL=$(aws cloudformation describe-stacks \
     --output text \
     --region $REGION)
 
+# Get API Key ID
+API_KEY_ID=$(aws cloudformation describe-stacks \
+    --stack-name $STACK_NAME \
+    --query 'Stacks[0].Outputs[?OutputKey==`ApiKeyId`].OutputValue' \
+    --output text \
+    --region $REGION)
+
+# Get State Machine ARN
+STATE_MACHINE_ARN=$(aws cloudformation describe-stacks \
+    --stack-name $STACK_NAME \
+    --query 'Stacks[0].Outputs[?OutputKey==`StateMachineArn`].OutputValue' \
+    --output text \
+    --region $REGION)
+
 echo -e "${GREEN}✅ Deployment completed successfully!${NC}"
 echo
 echo -e "${YELLOW}📋 Deployment Summary:${NC}"
 echo "  Stack Name: $STACK_NAME"
 echo "  API Gateway URL: $API_URL"
+echo "  API Key ID: $API_KEY_ID"
+echo "  State Machine ARN: $STATE_MACHINE_ARN"
 echo "  S3 Bucket: $ACTUAL_S3_BUCKET"
 echo "  DynamoDB Table: $DYNAMO_DB_NAME"
 echo "  Region: $REGION"
+echo
+echo -e "${YELLOW}📝 To retrieve your API key value:${NC}"
+echo "  aws apigateway get-api-key --api-key $API_KEY_ID --include-value --query 'value' --output text"
 echo
 echo -e "${GREEN}🎉 Your FOMC Debriefs infrastructure is ready!${NC}"
 echo "Update your .env file with: API_BASE_URL=$API_URL"
