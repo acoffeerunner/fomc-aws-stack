@@ -1,0 +1,23 @@
+# Lambda layer dependencies
+# Install into layer.zip: pip install -r requirements.txt -t python/
+# Then: zip -r layer.zip python/
+
+# Google AI (Gemini)
+google-genai>=1.0.0
+
+# YouTube Data API
+google-api-python-client>=2.0.0
+
+# Pydantic (structured AI responses)
+pydantic>=2.0.0
+
+# Date/time parsing
+python-dateutil>=2.8.0
+isodate>=0.6.0
+pytz>=2024.1
+
+# Web scraping (FOMC calendar)
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Note: boto3 and botocore are provided by the Lambda runtime — do not include in layer
