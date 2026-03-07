@@ -1,0 +1,77 @@
+version: 0.2
+
+env:
+  parameter-store:
+    YOUTUBE_API_KEY: /fomc-gists/youtube-api-key
+    GOOGLE_AI_API_KEY: /fomc-gists/google-ai-api-key
+    FED_CHANNEL_ID: /fomc-gists/fed-channel-id
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.10
+    commands:
+      # Build Lambda layer from requirements.txt
+      - mkdir -p python
+      - pip install -r requirements.txt -t python/
+      - zip -r layer.zip python/
+
+  pre_build:
+    commands:
+      # Package Lambda functions
+      - NEEDS_SHARED="livestream_monitor transcriber opening_statement_analysis press_qa_analysis"
+      - |
+        for lambda_file in lambda_*.py; do
+          function_name=$(basename "$lambda_file" .py | sed 's/lambda_//')
+          if echo "$NEEDS_SHARED" | grep -qw "$function_name"; then
+            zip -j "${function_name}.zip" "$lambda_file" shared_utils.py
+          else
+            zip -j "${function_name}.zip" "$lambda_file"
+          fi
+        done
+
+  build:
+    commands:
+      - |
+        aws cloudformation deploy \
+          --template-file cloudformation-template.yaml \
+          --stack-name "$APP_STACK_NAME" \
+          --parameter-overrides \
+            YoutubeApiKey="$YOUTUBE_API_KEY" \
+            GoogleAiApiKey="$GOOGLE_AI_API_KEY" \
+            FedChannelId="$FED_CHANNEL_ID" \
+          --capabilities CAPABILITY_IAM \
+          --no-fail-on-empty-changeset
+
+  post_build:
+    commands:
+      # Get S3 bucket name from stack outputs
+      - |
+        ACTUAL_S3_BUCKET=$(aws cloudformation describe-stacks \
+          --stack-name "$APP_STACK_NAME" \
+          --query 'Stacks[0].Outputs[?OutputKey==`S3BucketName`].OutputValue' \
+          --output text)
+      # Upload and publish layer
+      - aws s3 cp layer.zip "s3://$ACTUAL_S3_BUCKET/layers/layer.zip"
+      - |
+        LAYER_ARN=$(aws lambda publish-layer-version \
+          --layer-name fomc-python-dependencies \
+          --content "S3Bucket=$ACTUAL_S3_BUCKET,S3Key=layers/layer.zip" \
+          --compatible-runtimes python3.10 \
+          --query 'LayerVersionArn' --output text)
+      # Update each Lambda's code and attach layer
+      - NO_LAYER="data-api-gateway db-transform"
+      - |
+        for lambda_file in lambda_*.py; do
+          base_name=$(basename "$lambda_file" .py | sed 's/lambda_//')
+          function_name="fomc-$(echo "$base_name" | sed 's/_/-/g')"
+          aws lambda update-function-code \
+            --function-name "$function_name" \
+            --zip-file "fileb://${base_name}.zip"
+          aws lambda wait function-updated --function-name "$function_name"
+          if ! echo "$NO_LAYER" | grep -qw "$(echo "$base_name" | sed 's/_/-/g')"; then
+            aws lambda update-function-configuration \
+              --function-name "$function_name" --layers "$LAYER_ARN"
+          fi
+        done
+      - echo "Deployment complete!"

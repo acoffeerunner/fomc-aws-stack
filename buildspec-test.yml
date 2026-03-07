@@ -1,0 +1,18 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.10
+    commands:
+      - pip install pytest boto3 beautifulsoup4 requests python-dateutil pytz
+
+  pre_build:
+    commands:
+      - echo "Validating CloudFormation template..."
+      - aws cloudformation validate-template --template-body file://cloudformation-template.yaml
+
+  build:
+    commands:
+      - echo "Running tests..."
+      - python -m pytest tests/ -v --tb=short
