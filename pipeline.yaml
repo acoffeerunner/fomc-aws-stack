@@ -159,6 +159,10 @@ Resources:
                   - cloudformation:DeleteChangeSet
                   - cloudformation:ListChangeSets
                 Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*'
+              - Effect: Allow
+                Action:
+                  - cloudformation:GetTemplateSummary
+                Resource: '*'
               # IAM — role management (CFN creates IAM roles)
               - Effect: Allow
                 Action:

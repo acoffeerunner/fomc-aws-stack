@@ -45,6 +45,12 @@ phases:
 
   post_build:
     commands:
+      # Skip post_build if the CFN deploy failed
+      - |
+        if [ "$CODEBUILD_BUILD_SUCCEEDING" != "1" ]; then
+          echo "Build phase failed — skipping post_build"
+          exit 1
+        fi
       # Get S3 bucket name from stack outputs
       - |
         ACTUAL_S3_BUCKET=$(aws cloudformation describe-stacks \
