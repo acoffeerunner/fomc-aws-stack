@@ -3,7 +3,7 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      python: 3.10
+      python: 3.12
     commands:
       - pip install pytest boto3 beautifulsoup4 requests python-dateutil pytz
 

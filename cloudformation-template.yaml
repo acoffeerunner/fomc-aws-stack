@@ -182,7 +182,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: fomc-livestream-monitor
-      Runtime: python3.10
+      Runtime: python3.12
       Handler: lambda_livestream_monitor.lambda_handler
       Code:
         ZipFile: |
@@ -201,7 +201,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: fomc-transcriber
-      Runtime: python3.10
+      Runtime: python3.12
       Handler: lambda_transcriber.lambda_handler
       Code:
         ZipFile: |
@@ -218,7 +218,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: fomc-opening-statement-analysis
-      Runtime: python3.10
+      Runtime: python3.12
       Handler: lambda_opening_statement_analysis.lambda_handler
       Code:
         ZipFile: |
@@ -236,7 +236,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: fomc-press-qa-analysis
-      Runtime: python3.10
+      Runtime: python3.12
       Handler: lambda_press_qa_analysis.lambda_handler
       Code:
         ZipFile: |
@@ -254,7 +254,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: fomc-db-transform
-      Runtime: python3.10
+      Runtime: python3.12
       Handler: lambda_db_transform.lambda_handler
       Code:
         ZipFile: |
@@ -272,7 +272,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: fomc-data-api-gateway
-      Runtime: python3.10
+      Runtime: python3.12
       Handler: lambda_data_api_gateway.lambda_handler
       Code:
         ZipFile: |
@@ -289,7 +289,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: fomc-scheduler
-      Runtime: python3.10
+      Runtime: python3.12
       Handler: lambda_scheduler.lambda_handler
       Code:
         ZipFile: |

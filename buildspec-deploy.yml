@@ -63,7 +63,7 @@ phases:
         LAYER_ARN=$(aws lambda publish-layer-version \
           --layer-name fomc-python-dependencies \
           --content "S3Bucket=$ACTUAL_S3_BUCKET,S3Key=layers/layer.zip" \
-          --compatible-runtimes python3.10 \
+          --compatible-runtimes python3.12 \
           --query 'LayerVersionArn' --output text)
       # Update each Lambda's code and attach layer
       - NO_LAYER="data-api-gateway db-transform"
