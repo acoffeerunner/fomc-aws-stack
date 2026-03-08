@@ -895,6 +895,121 @@ Resources:
       AlarmActions:
         - !Ref FomcAlertTopic
 
+  # CloudWatch Dashboard for LLM Observability
+  LLMObservabilityDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: fomc-llm-observability
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "log",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Estimated Cost per Run",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "fields @timestamp, @logStream\n| filter @message like /LLM metadata:/\n| parse @message 'LLM metadata: *' as metadata_json\n| parse metadata_json '\"estimated_cost_usd\": *}' as cost\n| parse metadata_json '\"model_version\": \"*\"' as model\n| sort @timestamp desc\n| limit 20",
+                "logGroupNames": [
+                  "/aws/lambda/fomc-opening-statement-analysis",
+                  "/aws/lambda/fomc-press-qa-analysis"
+                ]
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Latency per Run",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "fields @timestamp, @logStream\n| filter @message like /LLM metadata:/\n| parse @message 'LLM metadata: *' as metadata_json\n| parse metadata_json '\"latency_seconds\": *, \"retry' as latency\n| sort @timestamp desc\n| limit 20",
+                "logGroupNames": [
+                  "/aws/lambda/fomc-opening-statement-analysis",
+                  "/aws/lambda/fomc-press-qa-analysis"
+                ]
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Token Usage",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "fields @timestamp, @logStream\n| filter @message like /LLM metadata:/\n| parse @message 'LLM metadata: *' as metadata_json\n| parse metadata_json '\"prompt_token_count\": *, \"candidates' as prompt_tokens\n| parse metadata_json '\"candidates_token_count\": *, \"total' as candidate_tokens\n| parse metadata_json '\"thoughts_token_count\": *}, \"model' as thought_tokens\n| sort @timestamp desc\n| limit 20",
+                "logGroupNames": [
+                  "/aws/lambda/fomc-opening-statement-analysis",
+                  "/aws/lambda/fomc-press-qa-analysis"
+                ]
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Retries & Quality",
+                "region": "${AWS::Region}",
+                "view": "table",
+                "query": "fields @timestamp, @logStream\n| filter @message like /LLM metadata:/\n| parse @message 'LLM metadata: *' as metadata_json\n| parse metadata_json '\"retry_count\": *, \"validation' as retries\n| parse metadata_json '\"quality_warnings\": *, \"estimated' as warnings\n| sort @timestamp desc\n| limit 20",
+                "logGroupNames": [
+                  "/aws/lambda/fomc-opening-statement-analysis",
+                  "/aws/lambda/fomc-press-qa-analysis"
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Duration",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "fomc-opening-statement-analysis", {"stat": "Average", "label": "Opening Statement"}],
+                  ["AWS/Lambda", "Duration", "FunctionName", "fomc-press-qa-analysis", {"stat": "Average", "label": "Press Q&A"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "region": "${AWS::Region}",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "fomc-opening-statement-analysis", {"stat": "Sum", "label": "Opening Statement"}],
+                  ["AWS/Lambda", "Errors", "FunctionName", "fomc-press-qa-analysis", {"stat": "Sum", "label": "Press Q&A"}]
+                ],
+                "period": 300,
+                "view": "timeSeries",
+                "stacked": false
+              }
+            }
+          ]
+        }
+
 Outputs:
   ApiGatewayUrl:
     Description: API Gateway URL
