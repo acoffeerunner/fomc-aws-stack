@@ -121,6 +121,18 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              # CloudWatch Logs — app log groups managed by CFN
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:TagResource
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/stepfunctions/fomc-*'
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                Resource: '*'
               # S3 — artifacts bucket + app bucket
               - Effect: Allow
                 Action:

@@ -13,7 +13,7 @@ phases:
     commands:
       # Build Lambda layer from requirements.txt
       - mkdir -p python
-      - pip install -r requirements.txt -t python/
+      - "python -m pip install -r requirements.txt -t python/ --platform manylinux2014_x86_64 --python-version 3.12 --only-binary=:all:"
       - zip -r layer.zip python/
 
   pre_build:
