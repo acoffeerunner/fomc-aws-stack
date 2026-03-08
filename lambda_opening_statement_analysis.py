@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from math import floor
 from time import sleep
@@ -15,7 +16,7 @@ from google.genai import types
 from googleapiclient.discovery import build
 from isodate import parse_duration
 from pydantic import BaseModel, Field
-from shared_utils import get_keys
+from shared_utils import get_keys, extract_usage_metadata, calculate_cost, build_metadata_record
 from zoneinfo import ZoneInfo
 
 
@@ -77,6 +78,18 @@ def get_opening_statement(date_dir):
         print(f"An error occurred: {e}")
 
 
+def validate_opening_analysis_quality(themes):
+    """Validate quality of opening statement analysis. Returns list of warnings."""
+    warnings = []
+    if len(themes) < 2:
+        warnings.append(f"Expected at least 2 themes, got {len(themes)}")
+    if themes and themes[0].theme != "Monetary Policy Stance":
+        warnings.append(
+            f"First theme should be 'Monetary Policy Stance', got '{themes[0].theme}'"
+        )
+    return warnings
+
+
 def get_opening_statement_analysis(opening_statement_transcript, keys, date_dir):
     client = genai.Client(api_key=keys["ai_key"])
     system_instruction = """You are an expert financial transcriber and analyst specializing in Federal Open Market Committee (FOMC) press conferences. Your task is to accurately transcribe and structure the content of the provided video segments. For each segment, you will identify all speakers, their full name, their role at their organization, the organization itself, and the verbatim text of their speech. For example, Name: Jerome Powell, Role: Chair, Organization: Federal Reserve. Another example: Name: Chris Rugaber, Role: Journalist, Organization: AP
@@ -95,11 +108,17 @@ In the transcript, ensure that you capture the following:
 - Maintain the original meaning and tone of the speakers while making these adjustments.
 
 Your output must be a valid JSON array of objects, where each object strictly adheres to the provided schema. Correctly attribute each block of dialogue to the correct speaker, role, and organization."""
-    while True:
+
+    max_retries = 3
+    validation_passed_first_try = True
+
+    for attempt in range(1, max_retries + 1):
         try:
             opening_analysis_plaintext = ""
+            final_chunk = None
             thematic_summary_prompt = f"""Provide a thematic summary of the opening statement given by the Fed Chair. Divide the summary of the Chair's statement into logical sections based on the topics covered. For each section/topic, summarize the Chair's key points, data cited, and any nuances in their assessment. Include 1 theme "Monetary Policy Stance" (if the Fed is tightening the monetary policy/increasing interest rates or loosening the monetary policy/decreasing interest rates). This theme should be the first in your list of themes. WHATEVER HAPPENS, DO NOT REPEAT YOURSELF. PROVIDE THE ANSWER ONCE. Given below is the transcript for the Fed Chair's transcript: {opening_statement_transcript["text"]}"""
 
+            start_time = time.time()
             response_thematic_summary = client.models.generate_content_stream(
                 model="gemini-2.5-flash",
                 contents=types.Part(text=thematic_summary_prompt),
@@ -115,7 +134,10 @@ Your output must be a valid JSON array of objects, where each object strictly ad
             chunks = []
 
             for chunk in response_thematic_summary:
+                final_chunk = chunk
                 chunks.append(chunk.text) if chunk.text else ""
+
+            latency = round(time.time() - start_time, 2)
 
             opening_analysis_plaintext = "".join(chunks)
 
@@ -124,16 +146,47 @@ Your output must be a valid JSON array of objects, where each object strictly ad
             opening_analysis_themes = [
                 Theme.model_validate(item) for item in opening_analysis_data
             ]
+
+            # Quality validation
+            quality_warnings = validate_opening_analysis_quality(opening_analysis_themes)
+            if quality_warnings:
+                logger.warning(f"Quality warnings: {quality_warnings}")
+                if attempt == 1:
+                    validation_passed_first_try = False
+
+            # Build and save metadata
+            usage = extract_usage_metadata(final_chunk)
+            cost = calculate_cost(
+                usage["prompt_token_count"],
+                usage["candidates_token_count"],
+                usage["thoughts_token_count"],
+            )
+            metadata = build_metadata_record(
+                usage_metadata=usage,
+                latency_seconds=latency,
+                retry_count=attempt - 1,
+                validation_passed_first_try=validation_passed_first_try,
+                quality_warnings=quality_warnings,
+                cost_usd=cost,
+            )
+            logger.info(f"LLM metadata: {json.dumps(metadata)}")
+
             logger.info(f"Opening Analysis JSON Response: {opening_analysis_plaintext}")
             put_in_s3(opening_analysis_data, f"{date_dir}/output_opening_analysis.json")
+            put_in_s3(metadata, f"{date_dir}/metadata_opening_analysis.json")
 
             return
 
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"Attempt {attempt}/{max_retries} failed: {e}")
             logger.error("Raw response text:")
             logger.error(opening_analysis_plaintext)
-            sleep(60)
+            if attempt < max_retries:
+                sleep(30)
+
+    raise RuntimeError(
+        f"Opening statement analysis failed after {max_retries} attempts"
+    )
 
 
 def put_in_s3(data_to_save, file_name):
